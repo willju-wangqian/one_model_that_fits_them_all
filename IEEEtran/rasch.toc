@@ -1,0 +1,11 @@
+\contentsline {section}{\numberline {1}Introduction}{1}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Analyzing Perceptual Experiments}{1}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Data description}{2}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Notation}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Two-stage model}{3}{subsection.1.4}%
+\contentsline {section}{\numberline {2}Example: full hierarchical model for JNDs in barcharts}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}The app: Model Buildr}{4}{subsection.2.1}%
+\contentsline {section}{\numberline {3}Results}{5}{section.3}%
+\contentsline {section}{\numberline {4}Discussion}{7}{section.4}%
+\contentsline {section}{Appendix\nobreakspace A: Error Estimates}{8}{section*.2}%
+\contentsline {section}{References}{8}{section*.4}%

@@ -1,0 +1,1361 @@
+\input{paper}
+
+\input{knitr.sty}
+
+\begin{document}
+% make the title area
+\maketitle
+\tableofcontents
+
+<<setup2, echo = FALSE, cache=FALSE, warning = FALSE, message=FALSE>>=
+library(knitr)
+opts_knit$set(self.contained=FALSE)
+opts_chunk$set(echo = FALSE, cache=TRUE)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpp) # CRAN
+library(lme4)
+library(lmerTest)
+library(ggpubr)
+theme_set(theme_bw())
+
+green <- "#148F77"
+brown <- "#F39C12"
+
+@
+
+<<data>>=
+# raw results from study for barcharts in long form.
+bars <- read.csv(here::here("data/bars.csv"))
+jnd_bar_original <- read.csv(here::here("data/jnd_bar.csv"))
+jnd_bar_original <- as_tibble(jnd_bar_original)
+@
+\IEEEraisesectionheading{\section{Introduction}\label{sec:introduction}}
+% Computer Society journal (but not conference!) papers do something unusual
+% with the very first section heading (almost always called "Introduction").
+% They place it ABOVE the main text! IEEEtran.cls does not automatically do
+% this for you, but you can achieve this effect with the provided
+% \IEEEraisesectionheading{} command. Note the need to keep any \label that
+% is to refer to the section immediately after \section in the above as
+% \IEEEraisesectionheading puts \section within a raised box.
+
+
+
+
+% The very first letter is a 2 line initial drop letter followed
+% by the rest of the first word in caps (small caps for compsoc).
+% 
+% form to use if the first word consists of a single letter:
+% \IEEEPARstart{A}{demo} file is ....
+% 
+% form to use if you need the single drop letter followed by
+% normal text (unknown if ever used by the IEEE):
+% \IEEEPARstart{A}{}demo file is ....
+% 
+% Some journals put the first two words in caps:
+% \IEEEPARstart{T}{his demo} file is ....
+% 
+% Here we have the typical use of a "T" for an initial drop letter
+% and "HIS" in caps to complete the first word.
+
+\IEEEPARstart{P}{sychophysics} research is often concerned with the edge of perception: the line between ``same" and ``different", also called the \emph{just noticeable difference}.
+The term ``Just Noticeable Difference" describes the smallest observable change to a stimulus. Kuroda and Hasuo \cite{psychophysical} defined the JND in signal $X$ formally as the difference  $\Delta X$ that is detected (on average) 75\% of the time compared to only 50\% of the time, assuming the same (constant) stimulus, i.e. $\Delta X = X_{75} - X_{50}$.
+Graph and visualization perception is a more applied domain, but the same considerations apply: How different do two bars in a bar chart need to be in order for viewers to see them as different? 
+\cite{JNDVIS21} examined this question for bar, pie, and bubble charts, using the method of constant stimuli. 
+
+While \cite{JNDVIS21} describes an excellent experiment, its findings could be significantly improved using a different approach to statistical modeling. 
+In this paper, we examine different ways to analyze data from psychophysics experiments, with the goal of translating research on linear mixed models into this domain, increasing statistical power, and producing better estimates. 
+Using data from \cite{JNDVIS21}, we provide code and visualizations for mixed effects models and compare the results of this analysis to other commonly used methods. 
+Different methods for modeling data from psychophysics experiments have been discussed in other papers \cite{kayWeberLawSecond2016}, but here we take a more expansive view: while we apply these methods to an experiment about JNDs, the methods we discuss are applicable to many experiments in graphics and human perception beyond psychophysics.
+
+\subsection{Analyzing Perceptual Experiments}
+
+Experimental psychophysics modeling often tries to separate the effects of individual variation from the overall assessment. 
+Such concerns appear in early papers such as \cite{treisman_relation_1966}, where there is a discussion of the best way to estimate variability in the uncertain region between stimulus presence and absence. 
+Even undergraduate perception textbooks address this issue in some fashion, discussing the difference between low and high thresholds for reporting a stimulus compared to different individual perceptual thresholds \cite[pg 18]{goldstein_sensation_2010}. 
+
+There are three main options when working with individual-level data while wanting to draw population-level conclusions: 
+\begin{itemize}
+    \item \emph{Naive approach} Analyze all individual data using a single summary model, ignoring the additional variability introduced by combining individual-level data. 
+    \item \emph{Two-stage approach} Analyze the data hierarchically, fitting individual-level models and then summarizing individual effects in a second, population-level model.
+    \item \emph{Hierarchical approach} Analyze the data using a random effects model, where there are (random) individual-level effects and (fixed) population-level effects.
+\end{itemize}
+
+The first option, fitting an aggregate model, is perhaps the most simple at the analysis level. 
+In some cases, the experimenter may design the experiment so that it is balanced, to ensure that participant-level effects average out by having all participants experience all model conditions. 
+This reduces some issues with estimates but does not usually address the correlated errors introduced at the participant level. 
+% The first option, to fit an aggregate model, has several problems. 
+Aggregate models ignore the correlation between responses from a single participant, which violates the i.i.d.\ (independent and identically distributed) assumption of almost every statistical model. 
+This has the effect of underestimating the variability in the model, which leads to overestimating the significance and effect size while producing confidence intervals with poor coverage rates. 
+In addition, these models may be subject to effects such as Simpson's paradox\cite{alin_simpsons_2010}, where aggregation over main effects changes the signal present in each subcategory.
+
+The second option is a more complicated approach in that it requires the specification of errors and relationships at least two (and sometimes more) levels of model and parameter structures.
+In the two-stage approach, a model is fit for each participant, and then some aspect of these participant-level models is used as input to a second stage of modeling that summarizes participant-level effects into an aggregate model. 
+Examples include \cite{rensinkPerceptionCorrelationScatterplots2010a,harrisonRankingVisualizationsCorrelation2014,beechamMapLineUpsEffects2017,nogueira_effect_2021,hogan_trichromatic_2018,maselli_sense_2016,koelewijn_effects_2021}, and variations on this approach are taken in \cite{hughes_just_2001}. 
+This approach may be intended to isolate participant and item-level effects to produce invariant comparisons \cite{rasch_probabilistic_1960}.
+
+Unfortunately, the relative simplicity of the required code masks the statistical complexity introduced by this approach, especially when additional transformations of the dependent variable are introduced, as is often the case with psychophysics data. 
+Tracking the different error components through two stages of modeling and necessary transformations quickly becomes a difficult and mathematically complex task. 
+% XXX see appendix for details??? XXX
+In addition, it is also harder to interpret results from these models, as the second model is fit with quantities derived from the first. 
+While this is in some ways related to the error variance issues we just mentioned, it is a much broader problem in that it is hard for readers of papers using these two-stage approaches to grasp the details and meaning of the second (population-level) model stage. 
+As this stage of the model is typically the one that is the most broadly meaningful, the lack of interpretability is a critical flaw in the two-stage approach.
+
+An additional problem that may occur with this approach, especially when fitting generalized linear models, is that some regression models fail to converge. 
+While fitting hundreds of models researchers are almost certain to encounter problems with at least some of the models. These convergence issues can often be resolved with larger sample sizes, i.e. using more data, as is done when fitting a single omnibus model.
+
+Having dispensed with the first and second options listed above, let us consider a third option: fitting a mixed-effects model. 
+In many ways, this option is intended to address the weaknesses of option 1 and option 2 that have previously been identified. 
+A mixed-effects model allows for the estimation of population-level effects, which are considered ``fixed" - that is, they represent quantities that are not a function of the sample. 
+Fixed effects exist in contrast to ``random" effects - effects which are a function of the sample and can be expected to differ for a different sample. 
+This partition is useful because it allows us to distinguish, for example, effects that are due to human physiology (and shared in common by all participants) from those that are due to individual participants' skill levels or perceptual biases. 
+The inclusion of random effects in the model allows us to include structural terms - for instance, we can add a participant effect, which adds an error term for each individual participant; this has the effect of modeling the relatedness of all trials completed by a single individual. 
+More importantly, however, fitting a single model that includes participant-level effects allows us to combine the advantages of option 2 and option 1: we get better estimates for population-level terms while still accommodating the individual variability that we know exists. 
+This produces more stable estimates for population-level and individual-level terms and also increases the statistical power. 
+
+Mixed-effects models are a more general category of models that include models that are more commonly used when analyzing data from perceptual experiments, such as repeated-measures ANOVA; these models are a very simple subset of the broader class of mixed-effects models but have strict requirements about the types of missingness and levels of repetition required. 
+These restrictions often lead to multiple models being fit to different subsets of the experimental data, as in \cite{saketEvaluatingInteractiveGraphical2018a}, instead of fitting a single overall model.
+Generalized mixed-effects models allow the experimenter to account for nonlinear, count, and binary/proportion data easily using the same basic modeling framework, and are more tolerant of imbalances in the number of observations per condition. 
+
+\subsection{Data description}
+
+Researchers in \cite{JNDVIS21} aimed to understand how object intensity and separation distance affect the perception of comparison in common visualizations, such as bar chart and pie chart. In this paper, we focus on the bar chart experiments and their corresponding data in \cite{JNDVIS21}. 
+The perception of comparison is determined by measuring the ``Just Noticeable Difference" (JND) using the method of Constant Stimuli. 
+There are 28 participants, five equally spaced object intensity levels, and five equally spaced separation distance levels. 
+For each combination of participant, object intensity, and distance, the participant is asked to judge if bar B (comparison bar) is higher than bar A (reference bar) in a bar chart with 10 bars.
+The height of reference bar A is determined by the intensity level, the distance between bar A and bar B is determined by the distance level, and the height of bar B varies within a small range centered at the height of bar A and equally spaced into 10 levels. 
+For each level of bar B height, each participant evaluates (approximately) 10 trials; these results are aggregated into a probability value.
+The varying heights of bar B is the Constant Stimuli, and 10 levels of bar B height can result in 10 probability values, which will later be used to fit the first-stage model in the two-stage approach. 
+\cite{JNDVIS21} fit 700 individual logistic regression models to find the JND for each combination of participant, stimulus intensity, and distance.
+
+\subsection{Notation}
+
+The function that describes the relationship between signal level and prediction performance is called a psychometric function \cite{psychophysical}.
+Different functions can be used as the psychometric function to fit the data. For example, logistic regression uses the sigmoid function, and probit regression uses the cumulative distribution function (CDF) of normal distribution. 
+In some situations, other constraints, such as anchoring points, may necessitate the use of a different psychometric model function, as in \cite{hollands_bias_2000}.
+\autoref{fig:id8-91} shows the responses made by participant 8-91 of the initial experiment at different signals (difference in heights of B and A) and the fitted psychometric functions.
+Note that the choice of the psychometric function form should depend on subject matter knowledge regarding signal activation, for example, activation slope, symmetry prior psychometric knowledge regarding the subject of interest. Different choices of the psychometric function form can affect the estimate of just noticeable differences (JND).
+
+For logistic regression 
+\begin{equation} 
+\label{mod.logistic}
+\text{logit} P(Y = y) = \mu + \beta x
+\end{equation}
+this means:
+\begin{eqnarray}\nonumber
+\mu + \beta x_{75} &=& \text{logit}(0.75) = log(3) \\ \nonumber
+\mu + \beta x_{50} &=& \text{logit} (0.50) = log(1) = 0 \\ \label{jnd.logistic}
+\Delta X = x_{75} - x_{50} &=& log(3)/\beta
+\end{eqnarray}
+
+% For probit regression
+% \begin{equation} \label{mod.probit}
+% \text{probit} P(Y = y) = \mu + \beta x
+% \end{equation}
+% this means:
+% \begin{eqnarray}\nonumber
+% \mu + \beta x_{75} &=& \text{probit}(0.75) = Q_N(0.75) \\ \nonumber
+% \mu + \beta x_{50} &=& \text{probit}(0.50) = Q_N(0.50) = 0 \\ \label{jnd.probit}
+% \Delta X = x_{75} - x_{50} &=& Q_N(0.75)/\beta
+% \end{eqnarray}
+% 
+% \wju{where $Q_N$ is the quantile function of a standard normal distribution.}
+% 
+% \wju{We can generalize this result to any invertible psychometric function} $p(\cdot)$. We have 
+% \begin{equation} \label{mod.general}
+% P(Y = y) = p(\mu + \beta x)
+% \end{equation}
+% Then
+% \begin{eqnarray}\nonumber
+% \mu + \beta x_{75} &=& p^{-1}(0.75) \\ \nonumber
+% \mu + \beta x_{50} &=& p^{-1}(0.50) \\ \label{jnd.general}
+% \Delta X = x_{75} - x_{50} &=& (p^{-1}(0.75) - p^{-1}(0.50))/\beta
+% \end{eqnarray}
+% where $p^{-1} (\cdot)$ is the inverse function of the psychometric function $p(\cdot)$
+
+<<model_list>>=
+bars <- bars %>% mutate(
+  signal_logd_10 = signal*log(distance)/10,
+  barsneighbors = as.numeric(((distance-9) %/% 42) == 0),
+  distance_10 = distance / 10,
+  intensity_10 = intensity / 10
+)
+
+if (!file.exists("logDIplus2.rds")) {
+  # logDIplus <- glmer(
+  #   cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance) + 
+  #     log(intensity):signal + signal:barsneighbors +
+  #     (1 + signal + signal:barsneighbors | userID), 
+  #   data = bars, family = binomial())
+  logDIplus <- glmer(
+    cbind(Yes, Total-Yes) ~ -1 + signal + 
+      signal:log(distance) + signal:log(intensity) + 
+      (1 + signal | userID), 
+    data = bars, family = binomial())
+  
+  # Run model a second time to ensure convergence.
+  ss <- getME(logDIplus,c("theta","fixef"))
+  logDIplus2 <- update(logDIplus,start=ss,control=glmerControl(optCtrl=list(maxfun=2e4)))
+  
+  saveRDS(logDIplus2, file = "logDIplus2.rds")
+  logDIplus <- logDIplus2
+} else {
+  logDIplus <- readRDS("logDIplus2.rds")
+}
+
+models_list <- list()
+
+models_list[['logit']] <- logDIplus
+
+if (!file.exists("probit_model.rds")) {
+  models_list[['probit']] <- glmer(
+    cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance_10) +
+      log(intensity_10):signal + 
+      (1 + signal | userID),
+    data = bars, family = binomial("probit")
+  ) 
+  
+  saveRDS(models_list[['probit']], file = "probit_model.rds")
+} else {
+  models_list[['probit']] <- readRDS("probit_model.rds")
+}
+
+if (!file.exists("cauchit_model.rds")) {
+  models_list[['cauchit']] <- glmer(
+    cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance) +
+      log(intensity):signal + 
+      (1 + signal | userID),
+    data = bars, family = binomial("cauchit")
+  ) 
+  
+  ss <- getME(models_list[['cauchit']], c("theta","fixef"))
+  cauchit2 <- update(models_list[['cauchit']],
+                     start=ss,
+                     control=glmerControl(optCtrl=list(maxfun=2e4)))
+  
+  models_list[['cauchit']] <- cauchit2
+  saveRDS(models_list[['cauchit']], file = "cauchit_model.rds")
+} else {
+  models_list[['cauchit']] <- readRDS("cauchit_model.rds")
+}
+
+@
+
+<<func_def>>=
+get_JND <- function(model, JND_formula, signal = "signal", type = 'population', ...) {
+  if (type == "population") {
+    fixed_effects <- fixef(model)
+    model_coef <- 
+      as.numeric(fixed_effects[which(str_detect(names(fixed_effects), signal))])
+  }
+  
+  JND_formula(model_coef, ...)
+}
+
+compute_JND_general <- function(model_coef, d, i, FUN = logit, scale = 1) {
+  beta <- model_coef[1] + model_coef[2] * log(d/scale) +
+    model_coef[3] * log(i/scale)
+  (FUN(0.75) - FUN(0.5)) / beta
+}
+
+sigmoid <- function(x) {
+  1 / (1 + exp(-x))
+}
+
+logit <- function(x) {
+  # if(x == 0) x <- 0.01
+  # if(x == 1) x <- 0.99
+  log(x) - log(1-x)
+}
+
+logit_vec <- Vectorize(logit)
+@
+
+
+<<id8-91, fig.width='\\\\textwidth', fig.height=4, fig.cap="Logistic regression; linetype to be selected">>=
+distance = 177
+intensity = 150
+userID = "8_91"
+
+id8_91 <- bars %>% 
+  filter(userID == !!userID, distance == !!distance, intensity == !!intensity)
+
+predframe <- data.frame(signal = seq(-9, 9, by=0.01), 
+                        distance = distance, intensity = intensity, 
+                        barsneighbors = as.numeric(distance == 9), 
+                        userID = userID, distance_10 = distance/10, 
+                        intensity_10 = intensity/10)
+predframe$fitted_logit <- predict(models_list$logit, 
+                                  newdata = predframe, type = "response")
+predframe$fitted_probit <- predict(models_list$probit, 
+                                   newdata = predframe, type = "response")
+predframe$fitted_cauchit <- predict(models_list$cauchit, 
+                                    newdata = predframe, type = "response")
+
+predframe_long <- pivot_longer(
+  predframe, cols = c("fitted_logit", "fitted_probit", "fitted_cauchit"), 
+  names_to = "link", values_to = "fitted_val")
+
+id8_91 %>% 
+  ggplot(aes(x=signal, y= Yes/Total)) +
+  geom_point(colour = "steelblue", size = 3.5) +
+  geom_line(aes(y = fitted_val, linetype = link), 
+            data = predframe_long, linewidth = 0.5) +
+  xlab("Difference in heights of B and A.") +
+  ylab("Predicted (black) and observed (blue)\nFrequency of B > A.") +
+  ggtitle("Participant 8_91, distance: 177, intensity: 150") +
+  scale_linetype_manual("link", values = c(3,2,1))
+
+# id8_91 <- bars %>%
+#   filter(userID=="8_91", distance == 177, intensity == 150)
+# 
+# lmr8_91 <- glm(cbind(Yes, Total-Yes)~signal, data =id8_91,
+#                family = binomial())
+# predframe <- data.frame(signal = seq(-8,8, by=0.01))
+# predframe$pred <- predict(lmr8_91, newdata = predframe, type="response")
+# 
+# id8_91 %>%
+#   ggplot(aes(x = signal, y = Yes/Total)) +
+#   geom_line(aes(y = pred), linewidth = 0.5, data = predframe, colour = "grey20") +
+#   geom_point(colour = "steelblue", size = 3.5) +
+#   xlab("Difference in heights of B and A.") +
+#   ylab("Predicted (black) and observed (blue)\nFrequency of B > A.") +
+#   ggtitle("Participant 8_91, distance: 177, intensity: 150")
+@
+
+<<lr_problems, fig.width='\\\\textwidth', fig.height=4, fig.cap="Problems with Logistic regressions", warning = FALSE>>=
+id60_63<- bars %>% 
+  filter(userID=="60_63", distance == 93, intensity == 100)
+
+id60_63 <- id60_63 %>% mutate(
+  Yes = ifelse(signal == 0.500, 10, Yes),
+  signal = 1.5*signal
+)
+
+lmr60_63 <- glm(cbind(Yes, Total-Yes)~signal, data =id60_63,
+                family = binomial())
+
+#id74_102<- bars %>% 
+#  filter(userID=="74_102", distance == 9, intensity == 100)
+
+id74_102<- bars %>% 
+  filter(userID=="66_122", intensity == 250, distance == 9)
+
+id74_102 <- id74_102 %>% mutate(
+  signal = signal *5,
+  signal = ifelse(signal>=.8, signal-1.8, signal)
+)
+
+lmr74_102 <- glm(cbind(Yes, Total-Yes)~signal, data =id74_102,
+                 family = binomial())
+
+
+predframe <- data.frame(signal = seq(-10,10, by=0.05))
+predframe$pred <- predict(lmr60_63, newdata = predframe, type="response")
+predframe$pred74_102 <- predict(lmr74_102, newdata = predframe, type="response")
+
+
+id60_63 %>%
+  ggplot(aes(x = signal, y = Yes/Total)) + 
+  geom_line(aes(y = pred74_102, colour = "almost perfect", linetype="model fit"), linewidth = 0.5, data = predframe) +
+  geom_line(aes(y = pred, colour = "perfect data", linetype="model fit"),  linewidth = 0.5, data = predframe) +
+  geom_line(aes(y = Yes/Total, colour = "perfect data", linetype="alternative"),  linewidth = 0.5, data = id60_63) +
+  geom_line(aes(y = Yes/Total, colour = "almost perfect", linetype="alternative"),  linewidth = 0.5, data = id74_102) +
+  geom_point(aes(colour = "almost perfect", shape = "almost perfect"), size = 3.5, alpha = 0.9, data = id74_102) +
+  geom_point(aes(colour = "perfect data", shape = "perfect data"), size = 5) +
+  xlab("Difference in heights of B and A.") +
+  ylab("Predicted (line) and observed (points)\nFrequency of B > A.") +
+  ggtitle("Data with non-convergence in models") +
+  scale_colour_manual("Observed", values=c("darkorange", "purple4")) +
+  scale_shape_manual("Observed", values=c(19, 4)) +
+  scale_linetype_manual("Predicted", values=c(2, 1)) +
+  theme(legend.position="bottom") 
+@
+
+\subsection{Two-stage model}
+
+Lu et al fit the data in a two-stage process: 
+first, they fit a logistic regression for each participant's data at each level of distance between bars and intensity level. In the example of the barcharts, this fits two parameters (intercept and slope) for each participant for each of the five levels of distance and five levels of intensity for a total of 700 logistic regressions. From these parameters, a participant-level just noticeable difference is calculated as shown in \autoref{jnd.logistic}.
+
+In a second step, these just noticeable differences are then combined in a linear model with covariates of distance and intensity. Lu et al show that log-transforming the dependent variable leads to better model performance. 
+
+Using this modeling approach the resulting model for just noticeable differences shows significant effects for the distance between bars only, while the height of the reference bar does not factor into the model significantly.
+
+Problems with this approach:
+Logistic regressions are curious models, in that the convergence of the model fails if the data is ``too good". 
+\autoref{fig:lr_problems} shows two examples of potentially observed data that results in the non-convergence of logistic regression as defined in \autoref{mod.logistic}. 
+In both cases, the fitted model chooses estimates for the slope that are very high -- alternative models with equally good model fits but far lower slope values are sketched into the figure. 
+Changes in the slope directly affect the estimates for the JND values. 
+In the example, the estimated slope values change from \Sexpr{round(coef(lmr60_63)[2],2)} and \Sexpr{round(coef(lmr74_102)[2],2)} in the fitted models to \Sexpr{round(4*0.6666667,2)} (purple) and \Sexpr{round(4/1.575,2)} (orange), respectively. 
+This goes in-hand with a ten-fold differences in the associated JND values: the fitted models result in JNDs of \Sexpr{round(log(3)/coef(lmr60_63)[2],2)} and \Sexpr{round(log(3)/coef(lmr74_102)[2],2)} pixels, respectively, while the alternative fits result in JNDs of \Sexpr{round(log(3)/(0.6666667*4),2)} (purple) and \Sexpr{round(log(3)/(4/1.575),2)} pixels (orange).
+
+As a result, the estimated JNDs from the participant-level logistic regressions are more unstable in the case of "too good" data and failed convergence and will thus affect the model fitting at the population level.
+
+Moreover, this two-stage modeling approach introduces extra challenges for variance estimation of the estimated JND in the population-level model. 
+Estimating JND at the participant level has variances, and the variance of each estimated JND will be carried on into the population-level model in a complex mathematical form. When the population-level model is fitted, the variance from the participant-level model will be included as part of the variance of the estimated JND at the population level, which not only increases the variance of the population-level JND estimation but also makes it harder to calculate.  
+
+
+<<barmodel>>=
+# logDI <- glmer(
+#   cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance) + 
+#     log(intensity):signal + 
+#     (1 + signal | userID), 
+#   data = bars, family = binomial())
+
+# bars <- bars %>% mutate(
+#   signal_logd_10 = signal*log(distance)/10,
+#   barsneighbors = as.numeric(((distance-9) %/% 42) == 0)
+# )
+# 
+# if (!file.exists("logDIplus2.rds")) {
+#   logDIplus <- glmer(
+#     cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance) + 
+#       log(intensity):signal + signal:barsneighbors +
+#       (1 + signal + signal:barsneighbors | userID), 
+#     data = bars, family = binomial())
+#   
+#   # Run model a second time to ensure convergence.
+#   ss <- getME(logDIplus,c("theta","fixef"))
+#   logDIplus2 <- update(logDIplus,start=ss,control=glmerControl(optCtrl=list(maxfun=2e4)))
+#   
+#   saveRDS(logDIplus2, file = "logDIplus2.rds")
+#   logDIplus <- logDIplus2
+# } else {
+#   logDIplus <- readRDS("logDIplus2.rds")
+# }
+
+# summary(logDIplus)
+
+# logD_basic <- glmer(
+#   cbind(Yes, Total-Yes) ~ signal + log(distance) +
+#     log(intensity) + barsneighbors +
+#     (1 + signal | userID),
+#   data = bars, family = binomial())
+# 
+# summary(logD_basic)
+# 
+# 
+# logD_basic2 <- glmer(
+#   cbind(Yes, Total-Yes) ~ -1 + signal + signal:log(distance) +
+#     log(intensity):signal + signal:barsneighbors +
+#     (1 + signal + signal:barsneighbors + signal:log(distance) | userID),
+#   data = bars, family = binomial())
+# ss_tmp <- getME(logD_basic2, c("theta","fixef"))
+# logDIplus2 <- update(logD_basic2, start= ss_tmp, control=glmerControl(optCtrl=list(maxfun=2e4)))
+# summary(logDIplus2)
+
+pred.frame <- tibble(expand.grid(
+  signal = seq(-10, 10, by=0.01), distance = c(9,  93, 177, 261, 345), intensity = 100, userID="population"))
+pred.frame <- pred.frame %>% mutate(
+  barsneighbors = as.numeric((distance-9) %/% 42 == 0)
+)
+pred.frame$preds <- predict(logDIplus, newdata = pred.frame, allow.new.levels=TRUE, type="response")
+
+
+barsplus <- tibble(expand.grid(
+  signal = seq(-10, 10, by=0.1), distance = c(9,  93, 177, 261, 345), intensity = c(50, 100, 150, 200, 250), userID=unique(bars$userID)))
+barsplus <- barsplus %>% mutate(
+  signal_logd_10 = signal*log(distance)/10,
+  barsneighbors = as.numeric((distance-9) %/% 42 == 0)
+)
+
+barsplus$preds <- predict(logDIplus, newdata = barsplus, allow.new.levels=TRUE, type="response")
+@
+
+
+<<jnd_lu, fig.cap = "Just noticeable differences for each participant estimated from each participant's data alone.">>=
+jnd_bars <- read.csv(here::here("JND-in-Charts/jnd/jnd_bar.csv"))
+jnd_bars %>% 
+  ggplot(aes(y = distance, x = jnd, colour = intensity)) + geom_point() +
+  facet_wrap(~userid) + 
+  scale_color_continuous(trans = 'reverse')
+@
+
+
+<<jnd-computation>>=
+bars <- bars %>% mutate(
+  barsneighbors = as.numeric(((distance-9) %/% 42) == 0),
+  distance_10 = distance / 10,
+  intensity_10 = intensity / 10
+)
+
+logit_fixef <- fixef(models_list$logit)
+logit_ranef <- ranef(models_list$logit)
+
+users <- logit_ranef$userID
+users$userID <- rownames(logit_ranef$userID)
+users <- users[, -1]
+# users$userID <- rownames(users)
+
+for (nn in names(logit_fixef)) {
+  if(!is.null(users[[nn]])) {
+    users[[nn]] <- users[[nn]] + logit_fixef[[nn]]
+  } else {
+    users[[nn]] <- logit_fixef[[nn]]
+  }
+}
+
+users <- users[, c("userID", names(logit_fixef))]
+users <- users %>% nest(user_coef = starts_with("signal")) %>% 
+  mutate(
+    user_coef = purrr::map(user_coef, function(x) {
+      tt <- as.numeric(x)
+      names(tt) <- colnames(x)
+      tt
+    })
+  )
+
+users$fixed_coef <- lapply(1:nrow(users), function(X) logit_fixef)
+
+###########################################
+# draw plot: JND vs intensity
+JND_grid <- expand.grid(
+  intensity = seq(1, 300, 1),
+  distance = seq(1, 350, 1),
+  userID = unique(bars$userID)
+)
+
+JND_grid$b <- if_else(JND_grid$distance <= 9, 0, 1)
+# JND_dat$b <- if_else(JND_dat$distance < (93 * 0.75), 0, 1)
+
+distance_set <- c(9, 93, 177, 261, 345)
+intensity_set <- c(50, 100, 150, 200, 250)
+
+# inspect_var <- "distance" # intensity 
+
+JND_dat_i <- JND_grid %>% filter(distance %in% !!distance_set)
+
+JND_dat_i <- JND_dat_i %>% left_join(users, by = "userID") %>% as_tibble()
+
+JND_population_i <- JND_dat_i %>% select(-userID, -user_coef) %>% distinct() %>% 
+  mutate(
+    JND = purrr::pmap_dbl(list(fixed_coef, distance, intensity), compute_JND_general),
+    type = if_else(intensity >= 50 & intensity <= 250,
+                   "interpolation", "extrapolation"),
+    event = if_else(intensity < 50, "before",
+                    if_else(intensity > 250, "after", "null")),
+    distance = factor(as.character(distance), 
+                      # levels = rev(as.character(distance_set))
+                      levels = (as.character(distance_set))
+    )
+  )
+
+JND_user_i <- JND_dat_i %>% mutate(
+  JND = purrr::pmap_dbl(list(user_coef, distance, intensity),
+                        compute_JND_general),
+  type = if_else(intensity >= 50 & intensity <= 250,
+                 "interpolation", "extrapolation"),
+  event = if_else(intensity < 50, "before",
+                  if_else(intensity > 250, "after", "null")),
+  distance = factor(as.character(distance), 
+                    # levels = rev(as.character(distance_set))
+                    levels = (as.character(distance_set))
+  )
+)
+
+bmods <- JND_user_i %>% filter(distance %in% !!distance_set, 
+                               intensity %in% !!intensity_set) %>% 
+  select(distance, intensity, userID, jnd = JND)
+
+# # JND vs intensity
+# p_jnd_intensity <- JND_user_i %>% 
+#   # filter(!(userID %in% del_user)) %>% 
+#   # filter(distance == 345, !(userID %in% del_user) %>% 
+#   ggplot(
+#     aes(x = intensity, y = JND, color = factor(distance),
+#         linetype = type)) +
+#   geom_line(aes(group = interaction(distance, event)), 
+#             data = JND_population_i) +
+#   geom_line(aes(group = interaction(distance, event, userID)),
+#             alpha = 0.2) +
+#   scale_linetype_discrete(limits = c("interpolation", "extrapolation")) +
+#   ylim(0, 10)
+
+
+#################################
+# draw the plot with error bars
+error_frame <- JND_dat_i %>% 
+  filter(distance %in% unique(bars$distance)) %>% 
+  # filter(intensity %in% unique(bars$intensity), 
+  #        distance %in% unique(bars$distance)) %>% 
+  select(-userID, -user_coef)
+
+vcov_matrix <- vcov(models_list$logit)
+quantile_constant <- 1.96
+
+error_frame <- error_frame %>% mutate(
+  vcov_vec = purrr::pmap(list(intensity, distance), function(ii, dd) {
+    c(1, log(dd), log(ii))
+  }),
+  beta = purrr::map2_dbl(fixed_coef, vcov_vec, function(coef, vec) {
+    sum(coef * vec)
+  }),
+  var_beta = purrr::map_dbl(vcov_vec, function(vv, vcov_m) {
+    as.numeric(t(vv) %*% vcov_m %*% vv)
+  }, vcov_m = vcov_matrix),
+  JND = log(3) / beta,
+  var_JND = (log(3) / beta^2)^2 * var_beta,
+  se_JND = sqrt(var_JND),
+  upper_limit = JND + quantile_constant * se_JND,
+  lower_limit = JND - quantile_constant * se_JND,
+  distance = factor(as.character(distance), 
+                    # levels = rev(as.character(distance_set))
+                    levels = (as.character(distance_set))
+  )
+)
+
+# print(head(error_frame))
+# print(vcov_matrix)
+
+p_jnd_i_error <- JND_population_i %>% 
+  ggplot(aes(x = intensity, y = JND)) +
+  geom_line(aes(group = interaction(distance, event), 
+                linetype = type),
+            linewidth = 1) +
+  geom_ribbon(aes(ymin = lower_limit, ymax = upper_limit,
+                  fill = distance, group = distance),
+              data = error_frame, alpha = 0.5) +
+  geom_line(aes(color = distance, linetype = type,
+                group = interaction(distance, event, userID)),
+            alpha = 0.2,
+            data = JND_user_i ) + # %>% filter(abs(JND) <= 10)
+  scale_linetype_discrete(limits = c("interpolation", "extrapolation")) +
+  # facet_grid(distance~.) +
+  facet_grid(.~distance) +
+  ylim(0, 10) +
+  theme(legend.position = "bottom") +
+  labs(title = "JND vs intensity given fixed values of distance")
+@
+
+<<>>=
+# foo <- function(x) {
+#   compute_JND_general(JND_population_i$fixed_coef[[1]], 
+#                       x, 100)
+# }
+# foo_vec <- Vectorize(foo, "x")
+# 
+# plot(1:345, foo_vec(1:345), type = 'l')
+@
+
+<<models, warning = FALSE, fig.cap = "Scatterplot comparing the JND estimates under Lu's approach and under the approach described here. The correlation is only 0.75, but most of the values are almost identical. In particular, participant 3\\_67 is problematic for the Lu model. Once this participant's values are excluded the correlation between the estimates jumps to 0.98.">>=
+# bmods <- bars %>% group_by(intensity, distance, userID) %>% nest()
+# bmods <- bmods %>% mutate(
+#   model = data %>% purrr::map(
+#     .f = function(d) {
+#       tryCatch({
+#         glm(cbind(Yes, Total-Yes)~signal, family = binomial(), data = d)
+#       })
+#     }
+#   )
+# )
+# bmods <- bmods %>% mutate(
+#   intercept = model %>% purrr::map_dbl(.f = function(m) coef(m)[1]),
+#   slope = model %>% purrr::map_dbl(.f = function(m) coef(m)[2]),
+#   jnd = log(3)/slope
+# )
+#bmods %>% 
+#  ggplot(aes(y = distance, x = jnd, colour = intensity)) + geom_point() +
+#  facet_wrap(~userID)
+
+theirs <- jnd_bars %>% 
+  select(distance, intensity, userID = userid, jnd) %>%
+  mutate(source="Lu et al")
+
+ours <- bmods %>% 
+  select(distance, intensity, userID, jnd) %>%
+  mutate(source="Ours")
+
+logistic_regression <- 
+  rbind(theirs, ours) %>% 
+  pivot_wider(values_from="jnd", names_from = "source")
+
+logistic_regression_filtered <- logistic_regression %>% 
+  filter(!(userID %in% c("100_119", "3_67", "102_133", "130_90")))
+
+logistic_regression_filtered %>%
+  ggplot(aes(x = `Lu et al`, y = `Ours`)) + 
+  geom_abline(linewidth = 0.25, colour = "grey50") +
+  geom_point() +
+  geom_text(aes(label=userID), nudge_y = -1,
+            data = logistic_regression_filtered %>% 
+              filter(abs(`Lu et al` - `Ours`) > 9)) +
+  coord_fixed(xlim = c(0, 22), ylim = c(0, 22)) + 
+  scale_x_continuous(breaks=seq(0, 20, 5)) +
+  scale_y_continuous(breaks=seq(0, 20, 5)) +
+  labs(x = "JND from the two-stage model", 
+       y = "JND from the GLME model")
+# coord_equal()
+
+# with(logistic_regression, {
+#   cor(Ours, `Lu et al`)
+# })
+# 
+# with(logistic_regression_filtered, {
+#   cor(Ours, `Lu et al`)
+# })
+
+@
+
+
+\section{Example: full hierarchical model for JNDs in barcharts}
+% Data from Lu et al.; 
+We used the bar chart data from Lu at al. \cite{JNDVIS21} to fit a random effects model as shown below: The data set contains $28 \times 5 \times 5 \times 10 = 7000$ observations since we have 28 participants, 5 levels for separation distance, 5 levels for height or intensity of reference bars (A), and 10 levels for height of comparison bars (B). The height difference in pixels between comparison bar B and reference bar A is the signal to be perceived by the participants.
+
+At the population level, model (\autoref{model.bar}) fits three coefficients to estimate the average individual's ability to assess the difference between the heights of two bars A and B. This model depends on: 
+
+\begin{enumerate}
+    \item the difference in heights between these two bars (encoded as signal $S$), 
+    \item the horizontal distance between bars A and bars B (encoded as distance $D$), and 
+    \item the height of bar A (encoded as intensity $I$). Note that bar A is the reference bar with the fixed height in the experiments.
+\end{enumerate}
+
+Both distance and intensity are included using a log transform. This transformation improves model performance significantly. It is appropriate given research on human perception of stimuli \cite{logPerception}.
+
+If we extend this model to account for individual effects, we can examine both the population-level trends and the trends for individual participants.
+We do this by using random effects. For each participant $j$, $j = 1, ..., 28$, we fit an intercept ($u_{j}$) and an effect in signal size $S$ ($u_{sj}$). 
+% and an effect in signal size for neighboring bars ($u_{2j}$).
+We make the usual assumptions for random effects of normality and mutual independence, i.e.\ $u_{j} \sim N(0, \sigma_u^2)$ and $u_{sj} \sim N(0, \sigma_s^2)$
+% and $u_{d_o} \sim N(0, \sigma_{d_o}^2)$ 
+i.i.d. with $u_{j} \perp u_{sj}$ for all $j$ .
+% , u \perp u_{d_o},$ and $u_s \perp u_{d_o}$: )
+% $u_{0j} \sim N(0, \sigma_0^2)$, $u_{1j} \sim N(0, \sigma_1^2)$, and $u_{2j} \sim N(0, \sigma_{2}^2)$ i.i.d. for all $j$ with $u_{0j} \perp u_{1j}, u_{0j} \perp u_{2j},$ and $u_{1j} \perp u_{2j}$ for all $j$: 
+
+\begin{eqnarray} \nonumber
+\label{model.bar}
+\text{logit}~P(Y = 1) = \beta_s S &+& \underbrace{\beta_{sd} \log(D) S}_{\text{impact of distance on signal}}  \\ \nonumber
+&+& \underbrace{\beta_{si} \log(I) S}_{\text{impact of intensity on signal}} \\ 
+&+& \underbrace{u_j + u_{sj} S}_{\text{participants' effects}}
+\end{eqnarray}
+
+% \begin{eqnarray} \nonumber
+% \text{logit} P(Y = 1) = \beta_s S + \underbrace{\beta_{sd} \log(D) S + \beta_{sd_o} S}_{\text{impact of distance on signal}}  + \\ \label{model.bar}
+% \underbrace{\beta_{si} \log(I) S}_{\text{intensity }} +  
+% \underbrace{u_j + u_{sj} S + u_{d_oj} S}_{\text{participants' effects}}.
+% \end{eqnarray}
+
+% \begin{eqnarray} \nonumber
+% \text{logit} P_j(B > A | D, I, S) = \beta_1 S + \underbrace{\beta_{I} \log(I) S}_{\text{intensity }} + \\ \label{model.bar2}
+% \underbrace{\beta_{D} \log(D) S + \beta_{N} \I(N = 0) S}_{\text{impact of distance on signal}} +  
+% \underbrace{u_{0j} + u_{1j} S + u_{2j} \I(N = 0) S}_{\text{participants' effects}} \\
+% = u_{0j} + (\beta_1 + u_{1j} + \beta_{D} \log(D) + \\ \nonumber
+% \beta_{I} \log(I) + (\beta_{N} + u_{2j}) \mathbb{I}(N = 0) )S \nonumber.
+% \end{eqnarray}
+
+where $S$ is the signal in the study, i.e.\ the difference in heights between bars B and A, i.e.\ if $S$ is negative, bar B is shorter than bar A.
+$D$ and $I$ are the distance between the bars and the height of bar A, respectively. 
+% $N$, as noted above, is the number of bars between the bars of interest and is used to denote the neighborhood effect.
+Note that for the overall population, no intercept is fitted, i.e.\ the point of (relative) subjective equality is set to zero at the population level. Instead, we are interested in how distance and intensity affect a viewer's perception of differences in bars' heights. 
+
+This model is fitted in R using the package \textit{lme4} \cite{lme4} and evaluated using package \textit{lmerTest}\cite{lmerTest}. We have also developed an R Shiny app \cite{shiny} to support users in building GLME models from scratch.
+
+\subsection{The app: Model Buildr}
+
+The Shiny app {\it Model Buildr} assists users in connecting the two-stage modeling approach with the GLME modeling approach. Users can construct their GLME models incrementally, guided by prompts within the app. The process starts with a basic logistic regression for a single participant with one condition level per condition variable. Subsequently, the app extends the logistic regression by incorporating all levels of a chosen condition variable. Users have the option to apply a log transformation to the condition variables and assess the effects of this transformation. These steps aid users in determining the fixed effects to include in the GLME model. Once the fixed effects selection is complete, the app constructs a GLME model by introducing random effects for bias and signal for each participant. The Shiny app {\it Model Buildr} can be accessed at \url{https://csafe.shinyapps.io/Model_Buildr/}
+
+
+\section{Results}
+
+\begin{table}
+\caption{\label{tab:DI} Estimates of fixed effects for the model specified by \autoref{model.bar}.}
+\centering
+<<logDIplus, results='asis', eval = FALSE>>=
+DI <- summary(logDIplus)
+tabs <- as_tibble(DI$coefficient[,-(3:4)])
+tabs <- tibble(Term = c("\\beta_s", "\\beta_{sd}", "\\beta_{si}"), tabs, `Pr(>|z|)` = "\\le 1e-6")
+kableExtra::kable(tabs, format="latex", digits=c(2, 2, 3, 6), booktabs=TRUE)
+@
+\begin{tabular}{lrrl}
+\toprule
+Term & Estimate & Std. Error & Pr(>|z|)\\
+\midrule
+$\beta_s$ & 2.48 & 0.059 & $\le 0.00001$\\
+$\beta_{sd}$ & -0.34 & 0.005 & $\le 0.00001$\\
+$\beta_{si}$ & -0.04 & 0.005 & $\le 0.00001$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\autoref{tab:DI} gives an overview of the fitted estimates for the model specified by \autoref{model.bar} at the population level. All fitted effects are highly significant. 
+
+Model to calculate the just noticeable difference at the population level for a distance between bars of $d$ and a height of the reference bar of $i$. Let $n$ encode the number of bars between the two bars of interest:
+
+\begin{eqnarray}
+\label{eq.jnd}
+\text{JND}(d, i) &=& 
+\frac{\log (3)}{\hat{\beta}_s + \hat{\beta}_{sd} \log(d) + \hat{\beta}_{si} \log(i)} \\ \nonumber
+&=&\frac{\log (3)}{2.48 - 0.34 \cdot\log(d) - 0.04 \cdot\log(i)}
+\end{eqnarray}
+
+
+<<function>>=
+JND <- function(distance, intensity, bars_between, model = logDIplus) {
+  coefs <- fixef(logDIplus)
+  # jnd <- log(3)/sum(coefs * c(1, log(distance), log(intensity), bars_between==0))
+  jnd <- log(3)/sum(coefs * c(1, log(distance), log(intensity)))
+  jnd
+}
+@
+
+For intensity of 240 pixels of the reference bar, and  distances of $d = 9, 93,$ and 177 between bars, the JNDs will result in \autoref{tb:est_jnd}.
+
+\begin{table}
+\caption{\label{tb:est_jnd} Table 2: Estimated JND according to \autoref{eq.jnd}}
+\centering
+\begin{tabular}{rcr}\hline
+JND(9, 240) &=& \Sexpr{round(JND(9, 240, 0), 4)} pixels \\
+JND(93, 240) &=& \Sexpr{round(JND(93, 240, 2), 4)} pixels \\
+JND(177, 240) &=& \Sexpr{round(JND(177, 240, 4), 4)} pixels\\ \hline
+\end{tabular}
+\end{table}
+
+<<>>= 
+
+@
+
+With the equation for computing the JND above (\autoref{eq.jnd}), we are able to plot the estimated population-level JND against the variables of interest. \autoref{fig:jnd_intensity_error} plots JND vs intensity given fixed values of distance. What we can see is that when intensity (height of reference bar A) increases, the estimated JND also increases. The 95\% confidence intervals of estimated JND are marked by the ribbon and are calculated using the estimated variance-covariance matrix of fixed effects and the delta method. Note that although the effect of intensity is tiny, it is still significant, and our model with more statistical power is able to capture it. Moreover, increasing the distance between the bars of interest will also increase the estimated JND. 
+% And adding the neighborhood effect (when the distance is 9 pixels) can greatly reduce the JND. 
+The estimated JNDs for each individual are also plotted in \autoref{fig:jnd_intensity_error}. Note that the spread of individual lines can be considered as a representation of the standard deviation of the individuals, which is different from the standard errors (represented by the confidence intervals) of the model estimates. 
+The dashed lines in \autoref{fig:jnd_intensity_error} represent estimated JND values that are extrapolated from the model. Weber's Law builds a proportional relationship between the JND and the initial stimuli intensity \cite{kandel_principles_2013}, and the relationship between the estimated interpolated JND and the intensity (height of reference bar A) can be approximated by a proportional relationship. However, the estimated extrapolated JND does not keep a proportional relationship with the intensity as shown in \autoref{fig:jnd_intensity_error}. This aligns with some research findings that suggest that Weber's Law fails at low intensities \cite{norris_system_1900}.
+
+
+<<jnd_intensity_error, fig.width='\\\\textwidth', fig.height=8, fig.cap="JND vs intensity given fixed values of distance. The transparent ribbon area shows the 95\\% confidence intervals for the estimated JNDs. The black line is the estimated population-level JNDs, where the solid part and the dashed part are the interpolation and extrapolation of the model, respectively. Other thin lines are the estimated individual-level JNDs. ", warning = FALSE>>=
+p_jnd_i_error
+@
+
+
+While the fixed effects in the model specified by \autoref{model.bar} allow us to calculate the JND at the population level, the fitted random effects allow us to inspect the perceptual skill of each participant. Adding the random effects of a participant is essentially adjusting the population-level estimates based on this participant's performance as shown in \autoref{eq:JND_random} and \autoref{fig:pop}. 
+
+\begin{eqnarray}
+\label{eq:JND_random}
+\text{JND}(d, i, j) = \frac{\log (3)}{(\hat{\beta}_s + \hat{u}_{sj}) + \hat{\beta}_{sd} \log(d) + \hat{\beta}_{si} \log(i) }
+\end{eqnarray}
+
+
+<<ranef-bar, fig.cap = "Overview of participant-based predictions. The green cross indicates the overall population based average. The further away a participant appears on the scatterplot, the more distinctly different their answers are from the population average. The faint grey line segments indicate how the random effects model a participant's perception. ", fig.height=5>>=
+REs <- ranef(logDIplus)$userID 
+REs$userID <- row.names(REs)
+
+dx = 0.1
+dy = 0.1
+randoms <- tibble(expand.grid(
+  intercept=seq(-1,0.45, by=dx),
+  slope = seq(-0.3, 0.5, by=dy)
+))
+# fix_slope = sum(fixef(logDIplus)*c(1,log(300), log(50), 0))
+fix_slope = sum(fixef(logDIplus)*c(1,log(300), log(50)))
+
+REs %>% ggplot(aes( x= `(Intercept)`, y = signal)) + 
+  geom_segment(aes(x = intercept-0.9*dx/2 - intercept/fix_slope*0.015, 
+                   xend=intercept + 0.9*dx/2 - intercept/fix_slope*0.015,
+                   y = slope - (fix_slope+slope)*0.9*dy/2, 
+                   yend = slope + (fix_slope+slope)*0.9*dy/2), # slope multiplied by 4
+               colour = "grey70", data = randoms) +
+  geom_segment(aes(x = -0.9*dx/2 , 
+                   xend = + 0.9*dx/2 ,
+                   y =  - (fix_slope)*0.9*dy/2, 
+                   yend = + (fix_slope)*0.9*dy/2), # slope multiplied by 4
+               colour = green) +
+  geom_point(aes(x = intercept, y = slope), data = randoms, colour = "grey70", size = .5) +
+  geom_point() +
+  geom_point(x = 0, y = 0, pch="x", colour = green, size = 5) +
+  geom_text(aes(label = userID), data = REs %>% filter(abs(`(Intercept)`)> .25 | abs(signal) > .25),
+            position = position_nudge(
+              x = 0.05, y = 0.035))+
+  #   center_x=0, center_y = 0)) +
+  #  coord_equal() +
+  xlab("Participants' predicted intercept") +
+  ylab("Participants' predicted slope") 
+@
+
+\autoref{fig:ranef-bar} gives an overview of the participant-specific effects. 
+Participants' perceptual skills can be measured directly from the ordering along the slope variable: because the Just Noticeable Difference is inversely proportional to the slope of the estimated probability curve along the signal, the only difference in the JND of two participants $j_1$ and $j_2$ is their predicted slope values $\hat{u}_{sj_1}$ and $\hat{u}_{sj_2}$.
+
+The light grey line segments and dots in \autoref{fig:ranef-bar} are intended to provide a reference on how the random effects in the model account for individuals' perceptual skills. All line segments are shown with respect to the overall population average (shown in green). An increase in slope indicates that a participant is able to spot smaller differences between the bars' heights. 
+The dot next to the line segment serves as a point of reference to the theoretical point of equilibrium (0, 0.5). When the line segment is moving away from this point of reference, it means that a participant is exhibiting a subjective bias: when the reference point is on the left of the line segment,  a participant has a tendency to respond that B is not larger than A. Three participants (68-122, 191-33, and 130-90) show a strong bias in this direction. Participant 3-67 exhibits the strongest bias in the other direction, i.e.\ has a tendency to respond that B is larger than A.
+
+Responses from individuals labeled in \autoref{fig:ranef-bar} are shown in \autoref{fig:individuals}. 
+
+<<pop, fig.width='\\\\textwidth', fig.height=4, fig.cap="Predictions for overall population (thick lines) and each of the participants (thin lines)">>=
+barsplus %>% filter(intensity == 100) %>%
+  ggplot(aes(x = signal, y = Yes/Total, colour = factor(intensity))) +
+  geom_line(aes(y = preds, group = userID), linewidth = .25, alpha =0.5) + 
+  geom_line(aes(y = preds), data = pred.frame, linewidth = 1) + 
+  facet_grid(.~distance, labeller="label_both") +
+  scale_color_manual(values="steelblue") +
+  xlab("Difference in heights of B and A.") +
+  ylab("Predicted Frequency of B > A.") +
+  theme(legend.position="none") + 
+  ggtitle("All participants, intensity: 100")
+@
+
+
+<<base>>=
+left <- pred.frame %>% filter(signal <= 0) %>% 
+  group_by(distance) %>% arrange(signal) %>%
+  mutate(
+    x = signal,
+    y = preds,
+    order = 1:n(),
+    group = "better-left",
+    intensity = unique(pred.frame$intensity)
+  ) %>% select(x, y, distance, intensity, order, group) 
+
+finish <- data.frame(expand.grid(
+  x = c(0, -10),
+  y = 0, 
+  distance = unique(pred.frame$distance),
+  intensity = unique(pred.frame$intensity),
+  group = "better-left"
+))
+finish$order <- max(left$order) + 1:2
+
+
+finish_worse <- finish %>% 
+  mutate(
+    y = 1,
+    group = "worse-left"
+  )
+
+worse_left <- rbind(left, finish_worse) %>% mutate(group = "worse-left")
+better_left <- rbind(left, finish)
+
+right <- pred.frame %>% filter(signal >= 0) %>% 
+  group_by(distance) %>% arrange(signal) %>%
+  mutate(
+    x = signal,
+    y = preds,
+    order = 1:n(),
+    group = "better-right",
+    intensity = unique(pred.frame$intensity)
+  ) %>% select(x, y, distance, intensity, order, group) 
+
+finish <- data.frame(expand.grid(
+  x = c(10, 0),
+  y = 1, 
+  distance = unique(pred.frame$distance),
+  intensity = unique(pred.frame$intensity),
+  group = "better-right"
+))
+finish$order <- max(right$order) + 1:2
+
+finish_worse <- finish %>% 
+  mutate(
+    y = 0,
+    group = "worse-right"
+  )
+
+worse_right <- rbind(right, finish_worse) %>% mutate(group = "worse-right")
+better_right <- rbind(right, finish)
+
+
+
+gg_base <- ggplot() +
+  geom_polygon(aes(x = x, y = y,  group = group, fill = "better than average"), 
+               data = better_left, alpha = 0.2) +
+  geom_polygon(aes(x = x, y = y,  group = group, fill = "worse than average"), 
+               data = worse_left, alpha = 0.2) +
+  geom_polygon(aes(x = x, y = y,  group = group, fill = "better than average"), 
+               data = better_right, alpha = 0.2) +
+  geom_polygon(aes(x = x, y = y,  group = group, fill = "worse than average"), 
+               data = worse_right, alpha = 0.2) +
+  geom_line(aes(x = signal, y = preds), data = pred.frame, colour = "white") +
+  facet_grid(.~distance, labeller="label_both") +
+  scale_fill_manual("",values = c(green, brown)) +
+  theme(legend.position = "bottom") +
+  xlab("Difference between height of B and A") +
+  ylab("Observed Ratio of B > A.")
+@
+
+
+<<individuals, out.width='\\linewidth', fig.width=4, fig.height = 8, fig.cap="Overview of  participants with the most extreme values in subject-specific skill (slope) and intercept (PSE away from zero).">>=
+
+idx <- c("191_33", "100_119", "3_67", "60_63", "66_122", "130_90", "44_25", "102_133", "8_91")
+blues <- brewer.pal(n = 6, "Blues")[-1]
+gg_base +
+  #  ggplot() +
+  #  geom_line(aes(y = preds, group=factor(intensity)), size=1,
+  #            data = pred.frame, colour = "grey50") + 
+  geom_line(aes(x = signal, y = preds, colour=factor(intensity)), linewidth=0.5,
+            data = barsplus %>% 
+              filter(userID %in% idx)) + 
+  geom_point(aes(x = signal, y = Yes/Total, colour = factor(intensity)), size=.75,
+             data = bars %>% filter(userID %in% idx)) + 
+  facet_grid(forcats::fct_rev(userID)~distance) +
+  theme_bw() + scale_color_manual("Intensity", values = blues) +
+  theme(legend.position="bottom", legend.box = "vertical") +
+  scale_y_continuous(breaks=c(0,0.5,1))
+@
+
+\autoref{fig:residuals}(a) is the ``residuals vs fitted values" plot for the model specified by \autoref{model.bar}. The grouping structure is seemingly worrying but is actually expected. It is caused by the discrete levels of intensity, distance, and participants. To see how the discrete nature of these variables leads to the structure in the residual plot, we simulate binomial samples for each combination of intensity, distance, participants, and signal values based on the fitted probabilities of model (\autoref{model.bar}). Then the simulated data is used to fit a model with the same model structure as model (\autoref{model.bar}), and its residual plot is shown as \autoref{fig:residuals}(b). The original data of \cite{JNDVIS21} reveal that some combinations of intensity, distance, participants, and signal values do not have exactly 10 trials, but the simulated data are sampled with fixed 10 trials for each combination. This difference results in the fact that every point in \autoref{fig:residuals}(b) can fit in one of the diagonal structures. And we can see from the comparison of the two residual plots that the diagonal structure is caused by the discrete nature of the variables. 
+
+In \autoref{fig:model_compare_plot}, the fitness of the GLME approach and the two-stage approach is compared at the population level. The red dots represent the average probability of predicting that the comparison bar is higher for the 28 participants across all combinations of intensity and distance. And the grey dots represent the probabilities of each individual. The population-level predictions are made by the fixed effects of the GLME model (solid lines) and the second-stage model of the two-stage model (dashed lines). 
+
+What we see from our comparisons between the GLME approach and the two-stage approach is that the two-stage model can better fit the data at the individual level. The reasoning behind this lies in the structural design of these models: the two-stage approach fits a logistic regression model for each combination of distance, intensity, and individual, while the GLME approach pulls information across various individuals when making individual-level predictions. However, \autoref{fig:model_compare_plot} shows that the GLME model is more effective in capturing the population-level trend for most combinations of the two variables, which aligns with the core objective of the study and allows for broad generalization.
+
+% Note: Lu's model, better for fitting individual data; our model pulls information from other individuals. At the population level, our model is better in capturing the overall trend
+% population level is more important since that is what the study cares about in the first place (results/conclusions can be generalized)
+% Lu's model cannot handle participants with negative estimated jnd?
+% compute mse?
+
+<<residuals, warning = FALSE, message=FALSE, out.width='\\linewidth', fig.height=4, fig.cap="(a) Residual plot for the original data and our proposed model. (b) Residual plot for the simulated data and our proposed model. The simulated data are binomial samples with fixed 10 trials and fitted probability for each combination of intensity, distance, participants, and signal values. The comparison of the two residual plots show that the diagonal structures presented in the residual plots are actually expected and are caused by the discrete nature of the variables.">>=
+bars$logit_fitted <- predict(models_list$logit, type = "response") 
+bars$logit_res_dev <- residuals(models_list$logit, type = 'deviance')
+bars$logit_res <- residuals(models_list$logit, type = 'response')
+
+p_res_1 <- bars %>% ggplot(aes(x=logit_fitted, y=logit_res)) +
+  geom_point() +
+  labs(x = "fitted values",
+       y = "residuals",
+       subtitle = "Residual plot for the original data")
+
+bars_sim <- bars
+set.seed(199615)
+
+bars_sim$Total_sim <- 10
+bars_sim <- bars_sim %>% 
+  mutate(
+    Yes_sim = purrr::map_dbl(logit_fitted, function(p) {
+      rbinom(1, Total_sim, p)
+    })
+  )
+
+# note that neighborhood effect is removed as well.
+models_list[['logit_sim']] <- glmer(
+  cbind(Yes_sim, Total_sim-Yes_sim) ~ -1 + signal + signal:log(distance) +
+    signal:log(intensity) +
+    (1 + signal | userID),
+  data = bars_sim, family = binomial()
+) 
+ss <- getME(models_list[['logit_sim']], c("theta","fixef"))
+models_list[['logit_sim']] <- update(
+  models_list[['logit_sim']], start=ss, 
+  control=glmerControl(optCtrl=list(maxfun=2e4))
+)
+
+
+bars_sim$sim_logit_fitted <- predict(models_list$logit_sim, type = "response") 
+bars_sim$sim_logit_res_dev <- residuals(models_list$logit_sim, type = 'deviance')
+bars_sim$sim_logit_res <- residuals(models_list$logit_sim, type = 'response')
+
+p_res_2 <- bars_sim %>% 
+  ggplot(aes(x=sim_logit_fitted, y=sim_logit_res)) +
+  geom_point() +
+  labs(x = "fitted values",
+       y = "residuals", 
+       subtitle = "Residual plot for the simulated data")
+
+ggarrange(p_res_1, p_res_2, 
+          labels = c("(a)", "(b)"),
+          ncol = 2, nrow = 1)
+@
+
+<<model_compare_code, echo=FALSE>>=
+# rm_user <- bmods %>% 
+#   # filter(jnd < 0) %>% 
+#   pull(userID) %>% unique()
+# 
+# user_performance <- bmods %>% 
+#   filter(! (userID %in% rm_user)) %>% 
+#   group_by(userID) %>% 
+#   summarise(
+#     jnd_avg = mean(jnd)
+#   ) %>% 
+#   arrange(desc(jnd_avg))
+# 
+# 
+# which.median <- function(x, na.rm = TRUE) {
+#   index <- 1:length(x)
+#   
+#   mm <- median(x, na.rm = na.rm)
+#   which.min(abs(x - mm))
+# }
+# 
+# selected_index <- c(
+#   user_performance$jnd_avg %>% which.min(),
+#   user_performance$jnd_avg %>% which.median(),
+#   user_performance$jnd_avg %>% which.max()
+# )
+# 
+# selected_users <- user_performance[selected_index, ] %>% pull(userID)
+# # bars %>% nest(.by = c(userID, distance, intensity)) %>% 
+# #   mutate(
+# #     total_correct = purrr::map_dbl(data, function(dd) {
+# #       mean(dd$Correct)
+# #     })
+# #   ) %>% 
+# #   arrange(desc(total_correct)) %>% select(-data) %>% 
+# #   filter(intensity == 100)
+# selected_users[1] <- "8_91"
+# 
+# 
+# bars_comp <- barsplus %>% filter(userID %in% selected_users,
+#                                  intensity == 100, 
+#                                  distance %in% c(9, 177, 345))
+# bars_comp$userID <- factor(bars_comp$userID, levels = selected_users)
+# 
+# bars_comp_points <- bars %>% filter(userID %in% selected_users,
+#                                     intensity == 100, 
+#                                     distance %in% c(9, 177, 345))
+# bars_comp_points$userID <- factor(bars_comp_points$userID, levels = selected_users)
+# 
+# lr_models <- bars_comp_points %>% 
+#   nest(.by = c("userID", "distance")) %>% 
+#   mutate(
+#     logistic_model = purrr::map(data, function(dd) {
+#       glm(cbind(Yes, Total-Yes) ~ 1 + signal, data = dd,
+#           family = binomial())
+#     })
+#   )
+# 
+# lr_pred_frame <- bars_comp %>% nest(.by = c("userID", "distance"), .key = "pred_frame")
+# lr_models <- lr_models %>% 
+#   left_join(lr_pred_frame, by = c("userID", "distance")) %>% 
+#   mutate(
+#     pred_frame = purrr::map2(logistic_model, pred_frame, function(mm, pf) {
+#       pf$preds_lr <- predict(mm, newdata = pf, type="response")
+#       pf
+#     }),
+#     jnd_lr = purrr::map_dbl(logistic_model, function(mm) {
+#       log(3) / mm$coefficients[2]
+#     })
+#   )
+# 
+# bmods_selected <- bmods %>% 
+#   filter(userID %in% selected_users,
+#          intensity == 100, 
+#          distance %in% c(9, 177, 345)) %>% 
+#   mutate(
+#     distance = as.numeric(as.character(distance))
+#   ) %>% 
+#   left_join(
+#     lr_models %>% select(userID, distance, jnd_lr),
+#     by = c("userID", "distance")
+#   ) %>% pivot_longer(c(jnd, jnd_lr), names_to = "jnd_type") %>% 
+#   mutate(
+#     xpos = if_else(jnd_type == "jnd", Inf, -Inf),
+#     ypos = if_else(jnd_type == "jnd", -Inf, Inf), 
+#     value = if_else(jnd_type == 'jnd', 
+#                     paste0("GLME JND: ", round(value, 2)),
+#                     paste0("LR JND: ", round(value, 2))),
+#     hjust = if_else(jnd_type == 'jnd', 1, -0.2),
+#     vjust = if_else(jnd_type == 'jnd', -0.4, 2),
+#     userID = factor(userID, levels = selected_users)
+#   )
+# 
+# bars_comp_new <- lr_models %>% select(-logistic_model, -data) %>% unnest(pred_frame)
+# bars_comp_new_long <- bars_comp_new %>% pivot_longer(c(preds, preds_lr),
+#                                                      names_to = "type") 
+# bars_comp_plot <- bars_comp_new_long %>% 
+#   ggplot(aes(x = signal)) +
+#   geom_point(aes(y = Yes/Total), 
+#              data = bars_comp_points) +
+#   geom_line(aes(y = value, linetype = type)) +
+#   facet_grid(userID~distance) +
+#   geom_text(aes(x = xpos, y = ypos, label = value,
+#              hjust = hjust, vjust = vjust),
+#              data = bmods_selected, size = 3)
+pop_pred_frame <- tibble(expand.grid(
+  signal = seq(-10, 10, by=0.01), 
+  distance = unique(bars$distance), 
+  intensity = unique(bars$intensity)))
+
+pop_pred_frame$pred <- predict(logDIplus, newdata = pop_pred_frame, re.form = NA, type = "response")
+
+# four jnd values are removed
+jnd_bar <- jnd_bar_original
+jnd_bar <- jnd_bar[(jnd_bar$jnd >= 0.1) & (jnd_bar$jnd <= 50), ]
+# jnd_bar <- jnd_bar[(jnd_bar$jnd > 0), ]
+jnd_bar$logjnd <- log(jnd_bar$jnd)
+
+LU_model <- lmer(logjnd ~ distance + ( 1 | userid) , data=jnd_bar)
+
+pop_pred_frame_LU <- tibble(expand.grid(
+  distance = unique(jnd_bar$distance),
+  intensity = unique(bars$intensity)
+))
+
+pop_pred_frame_LU$pred_log_jnd <- predict(LU_model, newdata = pop_pred_frame_LU,
+                                          re.form = NA, type = 'response')
+pop_pred_frame_LU <- pop_pred_frame_LU %>% mutate(
+  pred_jnd = exp(pred_log_jnd),
+  pred_beta = log(3) / pred_jnd,
+  signal = purrr::map(distance, function(d) seq(-10, 10, by=0.01))
+)
+pop_pred_frame_LU <- pop_pred_frame_LU %>% unnest(signal) %>% mutate(
+  pred_logit = signal * pred_beta,
+  pred_Lu = sigmoid(pred_logit)
+)
+
+pop_pred_frame_all <- pop_pred_frame %>% 
+  left_join(pop_pred_frame_LU %>% select(distance, intensity, signal, pred_Lu),
+            by = c("distance", "intensity", "signal"))
+pop_pred_frame_all <- pop_pred_frame_all %>% 
+  pivot_longer(cols = c("pred", "pred_Lu"), names_to = "model", values_to = "pred")
+
+bars_point <- bars %>% 
+  select(intensity, distance, signal, userID, Yes, Total) %>% 
+  mutate( y = Yes / Total)
+bars_point_population <- bars_point %>% 
+  group_by(intensity, distance, signal) %>% 
+  summarise(
+    avg_y = mean(y),
+    .groups = 'keep'
+  ) %>% ungroup()
+
+bars_comp_plot <- pop_pred_frame_all %>% ggplot(aes(x = signal)) +
+  geom_line(aes(y = pred, linetype = model)) +
+  facet_grid(distance ~ intensity) +
+  geom_point(aes(x = signal, y = y), alpha = 0.1, data = bars_point, size = 0.1) +
+  geom_point(aes(x = signal, y = avg_y), data = bars_point_population, color = 'red', size = 0.5)
+
+
+@
+
+<<model_compare_plot, fig.cap="Comparison of the fitness of the GLME approach and the two-stage approach at the population level. The red dots show the average prediction results of the 28 participants. The fitted population-level curves of the GLME approach and the two-stage approach are presented with solid lines and dashed lines, respectively.">>=
+bars_comp_plot
+@
+
+
+\section{Discussion}
+
+In this paper, we demonstrate the advantages of modeling psychophysical data using a generalized linear mixed-effect model (GLMM). The two-stage modeling approach is widely used in the field of psychophysics and is taken by Lu et al.\ \cite{JNDVIS21}. This approach fits individual-level models first and then builds a single population-level model based on the individual effects. We show that a mixed-effect model provides more benefits than fitting a two-stage model. A mixed-effect model considers individual-level effects as random effects and population-level effects as fixed effects and incorporates both in one single model, which provides more statistical power and better interpretability.
+
+We also developed a shiny app called \textit{Model Buildr}, which makes it easier for researchers to identify the model, the variables, and the cognitive settings and apply the mixed-effect method to their own topics. This shiny app captures lots of datasets and can be used for many other similar studies.
+
+The data set we used here is from \cite{JNDVIS21}. Using the two-stage approach, Lu et al. \cite{JNDVIS21} fitted a logistic regression to compute a JND for each combination of distance, intensity and participant, and then used the estimated JND as the response variable to build a population-level model.
+Using the mixed-effect model approach, we can include and analyze both population-level and individual-level effects in just one model.  
+
+Lu et al. did not find the effect of intensity significant with the two-stage modeling approach. And log-transformation of JND was needed at the population-level model to stabilize the variance. 
+With more statistical power, the mixed-effect model does find the effect of intensity tiny but significant. Log-transformation was applied to variables intensity and distance to align with research on human perception of stimuli \cite{logPerception}.
+
+Note that in the original experimental design of \cite{JNDVIS21}, the ranges of signal values are the same across different intensity levels for each distance level. But for each intensity level, the ranges of signal values increase as the distance increases. This means that, for a fixed intensity level, more signals are presented to participants as the distance increases; however, for a fixed distance level, the amount of signals in pixels remains the same across different intensity levels. This design conceals the effect of intensity, especially for the participants who are not good at the task.
+For example, participant ``100\_119" in \autoref{fig:individuals} was not able to properly spot the difference in height for bar A and B with the current experimental setup when the distance is 345 pixels. The range of signals should have been enlarged to a point where even participants not good at the task can spot the difference. Since the effect of intensity is potentially concealed by the setup, a model with more statistical power is needed in order to find the significant effect of intensity.
+
+Moreover, the mixed-effect model provides better interpretability. For example, if the distance between bar A and bar B increases from 100 pixels to 200 pixels, the task of determining the higher bar becomes more difficult. As a result, the estimated population-level JND increases, and the slope of the predicted probability curve decreases by approximately 0.1554 ($\hat{\beta}_D (\log(200) - \log(100))$). The decrease of the slope can then be translated into the following statement: on average when bar B is one pixel higher than bar A, the odds of predicting bar B is higher will decrease by 14.39\% ($1 - 1 / \exp(0.1554)$) if the distance between the two bars increases from 100 pixels to 200 pixels.
+
+The following formula calculates the change of JND:
+\begin{equation}
+    \frac{\log(3)}{\beta} - \frac{\log(3)}{\beta + c} = \frac{\log(3)}{\beta} \frac{c}{\beta + c}
+\end{equation}
+
+We really appreciate the efforts of Lu et al. \cite{JNDVIS21} for making their work open source. These efforts of Lu et al. and other researchers make the discussion about various methods and potential improvements possible. We emphasize the importance of open science since it promotes reproducibility of the work, accessibility for the public, and collaboration for future research. It allows researchers to share their insights, collaborate, and build upon each other's work.
+Our work is publicly available at: \url{https://github.com/willju-wangqian/one_model_that_fits_them_all}
+The world of open science will be constructed by more and more such efforts and contributions from the community.
+
+
+\appendices
+% \section{Psychometric Functions}
+% \subsection{Logistic}
+
+% \subsection{Power Law}
+
+% \subsection{Cyclic Power Law}
+
+
+\section{Error Estimates}
+
+First stage regression: $$\frac{\log{p_{ij\cdot\cdot m}}}{1-\log{p_{ij\cdot\cdot m}}} = \beta_{0ijm} + \beta_{1ijm} x_{ijklm} + \epsilon_{ijklm}$$
+
+Typically, it is assumed that $\epsilon_{ijklm} \sim N(0, \sigma)$.
+
+As a result of this modeling process, $\beta_{1ijm}$ is a random variable (because it is a function of the random variables $x_{ijklm}$ and $y_{ijklm}$). The variance of $\beta_{1ijm}$ can be calculated using Fisher's information matrix, but that calculation is ancillary to the primary goal here, which is to trace the errors from the first stage regression to the next stage. 
+
+The JND calculated for each condition (separation distance $i$ and intensity $j$) and participant $m$ is a function of $\beta_{1ijm}$: $$JND_{ijm} = \frac{\log 3}{\beta_{1ijm}}.$$ 
+By the delta method, we can calculate the variance of the JND as $$\text{Var} (JND) = \left(\frac{\log 3}{\beta_{1ijm}^2}\right)^2 \text{Var}\beta_{1ijm}$$. 
+
+% you can choose not to have a title for an appendix
+% if you want by leaving the argument blank
+% \section{}
+% Appendix two text goes here.
+
+
+% use section* for acknowledgment
+\ifCLASSOPTIONcompsoc
+% The Computer Society usually uses the plural form
+\section*{Acknowledgments}
+\else
+% regular IEEE prefers the singular form
+\section*{Acknowledgment}
+\fi
+
+
+The authors would like to thank...
+
+
+% Can use something like this to put references on a page
+% by themselves when using endfloat and the captionsoff option.
+% \ifCLASSOPTIONcaptionsoff
+%   \newpage
+% \fi
+
+
+
+% trigger a \newpage just before the given reference
+% number - used to balance the columns on the last page
+% adjust value as needed - may need to be readjusted if
+% the document is modified later
+%\IEEEtriggeratref{8}
+% The "triggered" command can be changed if desired:
+%\IEEEtriggercmd{\enlargethispage{-5in}}
+
+% references section
+
+% can use a bibliography generated by BibTeX as a .bbl file
+% BibTeX documentation can be easily obtained at:
+% http://mirror.ctan.org/biblio/bibtex/contrib/doc/
+% The IEEEtran BibTeX style support page is at:
+% http://www.michaelshell.org/tex/ieeetran/bibtex/
+\bibliographystyle{IEEEtran}
+\bibliography{references.bib}
+
+
+% biography section
+% 
+% If you have an EPS/PDF photo (graphicx package needed) extra braces are
+% needed around the contents of the optional argument to biography to prevent
+% the LaTeX parser from getting confused when it sees the complicated
+% \includegraphics command within an optional argument. (You could create
+% your own custom macro containing the \includegraphics command to make things
+% simpler here.)
+%\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{mshell}}]{Michael Shell}
+% or if you just want to reserve a space for a photo:
+
+% \begin{IEEEbiography}{Michael Shell}
+% Biography text here.
+% \end{IEEEbiography}
+% 
+% % if you will not have a photo at all:
+% \begin{IEEEbiographynophoto}{John Doe}
+% Biography text here.
+% \end{IEEEbiographynophoto}
+
+% insert where needed to balance the two columns on the last page with
+% biographies
+%\newpage
+
+% \begin{IEEEbiographynophoto}{Jane Doe}
+% Biography text here.
+% \end{IEEEbiographynophoto}
+
+% You can push biographies down or up by placing
+% a \vfill before or after them. The appropriate
+% use of \vfill depends on what kind of text is
+% on the last page and whether or not the columns
+% are being equalized.
+
+%\vfill
+
+% Can be used to pull up biographies so that the bottom of the last one
+% is flush with the other column.
+%\enlargethispage{-5in}
+
+
+
+% \section{Conclusion}
+% The conclusion goes here.
+
+
+% that's all folks
+\end{document}
+
